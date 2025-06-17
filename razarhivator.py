@@ -1,4 +1,3 @@
-
 import os
 import logging
 import asyncio
@@ -111,9 +110,16 @@ async def process_link(message: types.Message, state: FSMContext):
             await message.reply(f"Ошибка: {str(e)}")
 
     final_files = [f for f in Path(OUTPUT_DIR).iterdir() if f.is_file() and f.suffix.lower() in ['.json', '.session']]
-    await message.reply(f"Готово! Разархивировано и сохранено: {len(final_files)} файлов.")
-    await state.clear()
-    await state.set_state(DownloadState.waiting_for_link)
+
+    if not final_files:
+        await message.reply("Готово! Но не найдено файлов .json или .session.")
+    else:
+        await message.reply(f"Готово! Отправляю {len(final_files)} файлов:")
+        for file in final_files:
+            try:
+                await message.reply_document(types.FSInputFile(path=file))
+            except Exception as e:
+                await message.reply(f"Не удалось отправить файл {file.name}: {str(e)}")
 
 @dp.message()
 async def fallback(message: types.Message):
