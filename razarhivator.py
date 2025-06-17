@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command, StateFilter
 from pathlib import Path
 from pyunpack import Archive
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -144,10 +145,37 @@ async def process_link(message: types.Message, state: FSMContext):
 
         download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{user_id}/{share_id}"
         await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
+        buttons = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📥 Скачать снова", url=download_link)],
+            [InlineKeyboardButton(text="📤 Загрузить ещё", callback_data="upload_more")],
+            [InlineKeyboardButton(text="🗑 Удалить архив", callback_data="delete_last")]
+        ])
+        await message.reply("Что хотите сделать дальше?", reply_markup=buttons)
 
 @dp.message()
 async def fallback(message: types.Message):
     await message.reply("Используй команду /start и отправь ссылки на MEGA.")
+
+@dp.callback_query(lambda c: c.data == "upload_more")
+async def handle_upload_more(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.message.answer("Хорошо, отправьте новые ссылки на MEGA:")
+    await state.set_state(DownloadState.waiting_for_link)
+    await callback_query.answer()
+
+@dp.callback_query(lambda c: c.data == "delete_last")
+async def handle_delete_last(callback_query: CallbackQuery):
+    user_id = str(callback_query.from_user.id)
+    user_folder = Path("/app/аккаунт") / user_id
+    share_folder = Path("/app/share") / user_id
+    try:
+        if user_folder.exists():
+            shutil.rmtree(user_folder)
+        if share_folder.exists():
+            shutil.rmtree(share_folder)
+        await callback_query.message.answer("Последние файлы и архивы удалены.")
+    except Exception as e:
+        await callback_query.message.answer(f"Ошибка при удалении: {str(e)}")
+    await callback_query.answer()
 
 async def main():
 
