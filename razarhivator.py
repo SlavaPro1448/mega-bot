@@ -62,6 +62,10 @@ async def process_link(message: types.Message, state: FSMContext):
         await message.reply("Не найдено ни одной ссылки на MEGA.")
         return
 
+    user_id = str(message.from_user.id)
+    user_output_dir = Path(OUTPUT_DIR) / user_id
+    user_output_dir.mkdir(parents=True, exist_ok=True)
+
     for file in os.listdir(DOWNLOAD_DIR):
         file_path = Path(DOWNLOAD_DIR) / file
         if file_path.is_file():
@@ -85,11 +89,11 @@ async def process_link(message: types.Message, state: FSMContext):
 
             file_path = Path(DOWNLOAD_DIR) / downloaded_files[0]
             if file_path.suffix.lower() in ['.zip', '.rar', '.7z']:
-                extract_dir = os.path.join(OUTPUT_DIR, file_path.stem)
+                extract_dir = os.path.join(user_output_dir, file_path.stem)
                 os.makedirs(extract_dir, exist_ok=True)
                 recursively_unpack(file_path, extract_dir)
             else:
-                new_path = Path(OUTPUT_DIR) / file_path.name
+                new_path = user_output_dir / file_path.name
                 os.rename(file_path, new_path)
 
             if 'extract_dir' in locals() and os.path.exists(extract_dir):
@@ -97,7 +101,7 @@ async def process_link(message: types.Message, state: FSMContext):
                     for name in files:
                         fpath = Path(root) / name
                         if fpath.suffix.lower() in ['.json', '.session']:
-                            os.rename(fpath, Path(OUTPUT_DIR) / name)
+                            os.rename(fpath, user_output_dir / fpath.name)
                         else:
                             os.remove(fpath)
                     for d in dirs:
@@ -113,19 +117,19 @@ async def process_link(message: types.Message, state: FSMContext):
         except Exception as e:
             await message.reply(f"Ошибка: {str(e)}")
 
-    final_files = [f for f in Path(OUTPUT_DIR).iterdir() if f.is_file() and f.suffix.lower() in ['.json', '.session']]
+    final_files = [f for f in user_output_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.json', '.session']]
 
     if not final_files:
         await message.reply("Готово! Но не найдено файлов .json или .session.")
     else:
         share_id = str(uuid.uuid4())
-        share_folder = Path("/app/share") / share_id
+        share_folder = Path("/app/share") / user_id / share_id
         share_folder.mkdir(parents=True, exist_ok=True)
         for f in final_files:
             shutil.copy(f, share_folder / f.name)
 
-        # Планируем удаление папки через 30 минут
-        async def delayed_cleanup(folder, delay=1800):  # 1800 секунд = 30 минут
+        # Удаление через 30 минут
+        async def delayed_cleanup(folder, delay=1800):
             await asyncio.sleep(delay)
             try:
                 shutil.rmtree(folder)
@@ -138,7 +142,7 @@ async def process_link(message: types.Message, state: FSMContext):
 
         asyncio.create_task(delayed_cleanup(share_folder))
 
-        download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{share_id}"
+        download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{user_id}/{share_id}"
         await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
 
 @dp.message()
@@ -148,8 +152,9 @@ async def fallback(message: types.Message):
 async def main():
 
     async def handle_download(request):
-        token = request.match_info.get("token")
-        folder = Path("/app/share") / token
+        token1 = request.match_info.get("token1")
+        token2 = request.match_info.get("token2")
+        folder = Path("/app/share") / token1 / token2
         if folder.exists() and folder.is_dir():
             zip_path = folder.with_suffix(".zip")
             if not zip_path.exists():
@@ -158,7 +163,7 @@ async def main():
         return web.Response(status=404, text="Not found")
 
     app = web.Application()
-    app.router.add_get("/download/{token}", handle_download)
+    app.router.add_get("/download/{token1}/{token2}", handle_download)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, port=8080)
