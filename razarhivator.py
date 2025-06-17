@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import uuid
 import shutil
+import time
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -122,6 +123,21 @@ async def process_link(message: types.Message, state: FSMContext):
         share_folder.mkdir(parents=True, exist_ok=True)
         for f in final_files:
             shutil.copy(f, share_folder / f.name)
+
+        # Планируем удаление папки через 30 минут
+        async def delayed_cleanup(folder, delay=1800):  # 1800 секунд = 30 минут
+            await asyncio.sleep(delay)
+            try:
+                shutil.rmtree(folder)
+                zip_path = folder.with_suffix(".zip")
+                if zip_path.exists():
+                    zip_path.unlink()
+                logging.info(f"Удалена временная папка и zip: {folder}")
+            except Exception as e:
+                logging.error(f"Ошибка при удалении: {str(e)}")
+
+        asyncio.create_task(delayed_cleanup(share_folder))
+
         download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{share_id}"
         await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
 
