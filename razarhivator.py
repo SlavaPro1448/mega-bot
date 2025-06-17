@@ -164,6 +164,10 @@ async def handle_upload_more(callback_query: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data == "delete_last")
 async def handle_delete_last(callback_query: CallbackQuery):
+    try:
+        await callback_query.message.delete()
+    except Exception as e:
+        logging.warning(f"Не удалось удалить сообщение: {str(e)}")
     user_id = str(callback_query.from_user.id)
     user_folder = Path("/app/аккаунт") / user_id
     share_folder = Path("/app/share") / user_id
