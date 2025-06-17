@@ -2,6 +2,9 @@ import os
 import logging
 import asyncio
 import subprocess
+import uuid
+import shutil
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
@@ -114,18 +117,37 @@ async def process_link(message: types.Message, state: FSMContext):
     if not final_files:
         await message.reply("Готово! Но не найдено файлов .json или .session.")
     else:
-        await message.reply(f"Готово! Отправляю {len(final_files)} файлов:")
-        for file in final_files:
-            try:
-                await message.reply_document(types.FSInputFile(path=file))
-            except Exception as e:
-                await message.reply(f"Не удалось отправить файл {file.name}: {str(e)}")
+        share_id = str(uuid.uuid4())
+        share_folder = Path("/app/share") / share_id
+        share_folder.mkdir(parents=True, exist_ok=True)
+        for f in final_files:
+            shutil.copy(f, share_folder / f.name)
+        download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{share_id}"
+        await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
 
 @dp.message()
 async def fallback(message: types.Message):
     await message.reply("Используй команду /start и отправь ссылки на MEGA.")
 
 async def main():
+
+    async def handle_download(request):
+        token = request.match_info.get("token")
+        folder = Path("/app/share") / token
+        if folder.exists() and folder.is_dir():
+            zip_path = folder.with_suffix(".zip")
+            if not zip_path.exists():
+                shutil.make_archive(str(zip_path.with_suffix("")), 'zip', folder)
+            return web.FileResponse(path=zip_path)
+        return web.Response(status=404, text="Not found")
+
+    app = web.Application()
+    app.router.add_get("/download/{token}", handle_download)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, port=8080)
+    await site.start()
+
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
