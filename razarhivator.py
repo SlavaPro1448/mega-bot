@@ -196,6 +196,12 @@ async def handle_delete_last(callback_query: CallbackQuery):
             shutil.rmtree(user_folder)
         if share_folder.exists():
             shutil.rmtree(share_folder)
+        zip_files = list(Path("/app/share") / user_id).glob("**/*.zip")
+        for zip_file in zip_files:
+            try:
+                zip_file.unlink()
+            except Exception as e:
+                logging.warning(f"Не удалось удалить zip-файл: {zip_file} — {e}")
         await callback_query.message.answer("Последние файлы и архивы удалены.")
     except Exception as e:
         await callback_query.message.answer(f"Ошибка при удалении: {str(e)}")
