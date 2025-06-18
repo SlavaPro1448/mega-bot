@@ -144,14 +144,32 @@ async def process_link(message: types.Message, state: FSMContext):
 
         asyncio.create_task(delayed_cleanup(share_folder))
 
-        deletion_time = datetime.utcnow() + timedelta(minutes=30)
-        deletion_str = deletion_time.strftime('%H:%M UTC')
+        remaining_seconds = 30 * 60
+        minutes = remaining_seconds // 60
+        seconds = remaining_seconds % 60
+        countdown_str = f"{minutes:02}:{seconds:02}"
 
         download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{user_id}/{share_id}"
         archive_message = await message.reply(
             f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}\n\n"
-            f"⏳ Архив будет удалён в {deletion_str}."
+            f"⏳ До удаления архива: {countdown_str}"
         )
+        # Обновление сообщения каждую секунду с обратным отсчётом
+        async def update_countdown(msg, delay):
+            for sec in range(delay - 1, 0, -1):
+                minutes = sec // 60
+                seconds = sec % 60
+                countdown_str = f"{minutes:02}:{seconds:02}"
+                try:
+                    await msg.edit_text(
+                        f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}\n\n"
+                        f"⏳ До удаления архива: {countdown_str}"
+                    )
+                except Exception:
+                    break
+                await asyncio.sleep(1)
+
+        asyncio.create_task(update_countdown(archive_message, remaining_seconds))
         buttons = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📥 Скачать снова", url=download_link)],
             [InlineKeyboardButton(text="🗑 Удалить архив", callback_data="delete_last")]
