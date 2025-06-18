@@ -14,6 +14,7 @@ from aiogram.filters import Command, StateFilter
 from pathlib import Path
 from pyunpack import Archive
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from datetime import datetime, timedelta
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -143,8 +144,14 @@ async def process_link(message: types.Message, state: FSMContext):
 
         asyncio.create_task(delayed_cleanup(share_folder))
 
+        deletion_time = datetime.utcnow() + timedelta(minutes=30)
+        deletion_str = deletion_time.strftime('%H:%M UTC')
+
         download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{user_id}/{share_id}"
-        archive_message = await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
+        archive_message = await message.reply(
+            f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}\n\n"
+            f"⏳ Архив будет удалён в {deletion_str}."
+        )
         buttons = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📥 Скачать снова", url=download_link)],
             [InlineKeyboardButton(text="🗑 Удалить архив", callback_data="delete_last")]
