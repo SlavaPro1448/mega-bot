@@ -144,7 +144,7 @@ async def process_link(message: types.Message, state: FSMContext):
         asyncio.create_task(delayed_cleanup(share_folder))
 
         download_link = f"https://{os.getenv('RAILWAY_STATIC_URL')}/download/{user_id}/{share_id}"
-        await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
+        archive_message = await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
         buttons = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📥 Скачать снова", url=download_link)],
             [InlineKeyboardButton(text="🗑 Удалить архив", callback_data="delete_last")]
@@ -179,6 +179,16 @@ async def handle_delete_last(callback_query: CallbackQuery):
         await callback_query.message.delete()
     except Exception as e:
         logging.warning(f"Не удалось удалить сообщение: {str(e)}")
+
+    # Удаляем сообщение со ссылкой, если возможно
+    async for msg in callback_query.message.chat.get_history(limit=5):
+        if msg.text and "ссылка для скачивания" in msg.text:
+            try:
+                await msg.delete()
+                break
+            except Exception as e:
+                logging.warning(f"Не удалось удалить сообщение со ссылкой: {str(e)}")
+
     user_folder = Path("/app/аккаунт") / user_id
     share_folder = Path("/app/share") / user_id
     try:
