@@ -147,7 +147,6 @@ async def process_link(message: types.Message, state: FSMContext):
         await message.reply(f"Готово! Вот ссылка для скачивания ZIP-архива:\n{download_link}")
         buttons = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📥 Скачать снова", url=download_link)],
-            [InlineKeyboardButton(text="📤 Загрузить ещё", callback_data="upload_more")],
             [InlineKeyboardButton(text="🗑 Удалить архив", callback_data="delete_last")]
         ])
         await message.reply("Что хотите сделать дальше?", reply_markup=buttons)
@@ -164,11 +163,22 @@ async def handle_upload_more(callback_query: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data == "delete_last")
 async def handle_delete_last(callback_query: CallbackQuery):
+    import shutil
+    from glob import glob
+
+    # Удаляем архивы .zip, связанные с пользователем
+    user_id = str(callback_query.from_user.id)
+    user_zip_dir = Path("/app/share") / user_id
+    for zip_file in user_zip_dir.glob("**/*.zip"):
+        try:
+            zip_file.unlink()
+        except Exception as e:
+            logging.warning(f"Не удалось удалить архив: {zip_file} — {e}")
+
     try:
         await callback_query.message.delete()
     except Exception as e:
         logging.warning(f"Не удалось удалить сообщение: {str(e)}")
-    user_id = str(callback_query.from_user.id)
     user_folder = Path("/app/аккаунт") / user_id
     share_folder = Path("/app/share") / user_id
     try:
