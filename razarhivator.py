@@ -67,6 +67,8 @@ async def process_link(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     user_output_dir = Path(OUTPUT_DIR) / user_id
     user_output_dir.mkdir(parents=True, exist_ok=True)
+    import time
+    start_time = time.time()
 
     for file in os.listdir(DOWNLOAD_DIR):
         file_path = Path(DOWNLOAD_DIR) / file
@@ -120,6 +122,12 @@ async def process_link(message: types.Message, state: FSMContext):
             await message.reply(f"Ошибка: {str(e)}")
 
     final_files = [f for f in user_output_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.json', '.session']]
+    # Отфильтровываем только файлы, добавленные после начала обработки
+    recent_files = []
+    for f in final_files:
+        if f.stat().st_mtime >= start_time:
+            recent_files.append(f)
+    final_files = recent_files
 
     if not final_files:
         await message.reply("Готово! Но не найдено файлов .json или .session.")
