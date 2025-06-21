@@ -67,6 +67,13 @@ async def process_link(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     user_output_dir = Path(OUTPUT_DIR) / user_id
     user_output_dir.mkdir(parents=True, exist_ok=True)
+    # Удаляем старые файлы перед началом новой загрузки
+    import shutil
+    for old_file in user_output_dir.glob("*"):
+        if old_file.is_file():
+            old_file.unlink()
+        elif old_file.is_dir():
+            shutil.rmtree(old_file, ignore_errors=True)
     import time
     start_time = time.time()
 
