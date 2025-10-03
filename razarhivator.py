@@ -17,7 +17,6 @@ from aiogram.filters import Command, StateFilter
 from pathlib import Path
 from pyunpack import Archive
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from datetime import datetime, timedelta
 import stripe
 
@@ -706,23 +705,18 @@ async def main():
         return web.Response(text="ok")
     app.router.add_get("/", handle_root)
 
-    # Use a clean path without the token; rely on Telegram secret header for auth
-    webhook_path = "/webhook"
-    setup_application(app, SimpleRequestHandler(dp, bot), path=webhook_path)
 
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8080"))
     site = web.TCPSite(runner, port=port)
     await site.start()
-    
+
     await bot.delete_webhook(drop_pending_updates=True)
-    if TELEGRAM_WEBHOOK_SECRET:
-        await bot.set_webhook(url=f"{_base_url()}{webhook_path}", secret_token=TELEGRAM_WEBHOOK_SECRET)
-    else:
-        await bot.set_webhook(url=f"{_base_url()}{webhook_path}")
-    
-    # Stay alive in webhook mode
+    # Start Telegram long-polling in background (single instance on Railway)
+    asyncio.create_task(dp.start_polling(bot))
+
+    # Stay alive
     await asyncio.Event().wait()
 
 
