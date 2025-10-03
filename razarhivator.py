@@ -725,5 +725,7 @@ async def main():
     # Stay alive in webhook mode
     await asyncio.Event().wait()
 
-    if __name__ == "__main__":
+
+# --- Entrypoint ---
+if __name__ == "__main__":
     asyncio.run(main())
