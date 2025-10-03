@@ -35,6 +35,9 @@ MAX_UNPACK_BYTES = int(os.getenv("MAX_UNPACK_BYTES", "0"))  # 0 = без огр�
 # Количество бесплатных дней триала (0 = без триала)
 STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "0"))
 
+# Секретный токен для Telegram webhook
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+
 # Нормализатор base URL
 def _base_url() -> str:
     url = (PUBLIC_BASE_URL or "").strip()
@@ -696,14 +699,23 @@ async def main():
     app.router.add_get("/pay/checkout", handle_checkout)
     app.router.add_post("/webhooks/stripe", handle_stripe_webhook)
     app.router.add_get("/download/{token1}/{token2}", handle_download)
-    
+
+    # Use a clean path without the token; rely on Telegram secret header for auth
+    webhook_path = "/webhook"
+    from aiogram.web import SimpleRequestHandler, setup_application
+    setup_application(app, SimpleRequestHandler(dp, bot), path=webhook_path)
+
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8080"))
     site = web.TCPSite(runner, port=port)
     await site.start()
 
-    await dp.start_polling(bot)
+    await bot.delete_webhook(drop_pending_updates=True)
+    if TELEGRAM_WEBHOOK_SECRET:
+        await bot.set_webhook(url=f"{_base_url()}{webhook_path}", secret_token=TELEGRAM_WEBHOOK_SECRET)
+    else:
+        await bot.set_webhook(url=f"{_base_url()}{webhook_path}")
 
 if __name__ == '__main__':
     asyncio.run(main())
