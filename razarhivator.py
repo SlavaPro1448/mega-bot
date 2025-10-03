@@ -701,9 +701,13 @@ async def main():
     app.router.add_post("/webhooks/stripe", handle_stripe_webhook)
     app.router.add_get("/download/{token1}/{token2}", handle_download)
 
+    # Root route for sanity (helps avoid 502 for GET /)
+    async def handle_root(request):
+        return web.Response(text="ok")
+    app.router.add_get("/", handle_root)
+
     # Use a clean path without the token; rely on Telegram secret header for auth
     webhook_path = "/webhook"
-    from aiogram.web import SimpleRequestHandler, setup_application
     setup_application(app, SimpleRequestHandler(dp, bot), path=webhook_path)
 
     runner = web.AppRunner(app)
