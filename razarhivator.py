@@ -32,6 +32,16 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 MAX_UNPACK_BYTES = int(os.getenv("MAX_UNPACK_BYTES", "0"))  # 0 = без ограничений
 
+# Количество бесплатных дней триала (0 = без триала)
+STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "0"))
+
+# Нормализатор base URL
+def _base_url() -> str:
+    url = (PUBLIC_BASE_URL or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.rstrip('/')
+
 # Настройка Stripe
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -75,6 +85,12 @@ def save_licenses(data):
 def is_license_active(user_id):
     """Проверяет, активна ли лицензия пользователя"""
     try:
+        # Администратор всегда имеет доступ
+        try:
+            if int(user_id) == int(ADMIN_ID):
+                return True
+        except Exception:
+            pass
         licenses = load_licenses()
         user_id_str = str(user_id)
         
@@ -159,7 +175,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     
     # Проверяем лицензию
     if not is_license_active(user_id):
-        pay_url = f"{PUBLIC_BASE_URL}/pay/checkout?user_id={user_id}"
+        pay_url = f"{_base_url()}/pay/checkout?user_id={user_id}"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Оплатить подписку", url=pay_url)]
         ])
@@ -180,7 +196,7 @@ async def process_link(message: types.Message, state: FSMContext):
     
     # Проверяем лицензию
     if not is_license_active(message.from_user.id):
-        pay_url = f"{PUBLIC_BASE_URL}/pay/checkout?user_id={message.from_user.id}"
+        pay_url = f"{_base_url()}/pay/checkout?user_id={message.from_user.id}"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Оплатить подписку", url=pay_url)]
         ])
@@ -337,7 +353,10 @@ async def process_link(message: types.Message, state: FSMContext):
 @dp.message(Command(commands=['pay']))
 async def pay_command(message: types.Message):
     if message.chat.type == 'private':
-        pay_url = f"{PUBLIC_BASE_URL}/pay/checkout?user_id={message.from_user.id}"
+        if message.from_user.id == ADMIN_ID:
+            await message.reply("Вы администратор: доступ открыт без подписки.")
+            return
+        pay_url = f"{_base_url()}/pay/checkout?user_id={message.from_user.id}"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Оплатить подписку", url=pay_url)]
         ])
@@ -545,8 +564,8 @@ async def main():
             
             user_id = int(user_id)
             
-            # Создаем Stripe Checkout Session
-            checkout_session = stripe.checkout.Session.create(
+            # Создаём параметры для Checkout Session
+            session_kwargs = dict(
                 mode='subscription',
                 line_items=[{
                     'price': STRIPE_PRICE_ID,
@@ -555,9 +574,16 @@ async def main():
                 metadata={
                     'user_id': str(user_id)
                 },
-                success_url=f"{PUBLIC_BASE_URL}/pay/success?u={user_id}",
-                cancel_url=f"{PUBLIC_BASE_URL}/pay/cancel?u={user_id}",
+                success_url=f"{_base_url()}/pay/success?u={user_id}",
+                cancel_url=f"{_base_url()}/pay/cancel?u={user_id}",
             )
+            # Добавляем триал, если указан в переменных окружения
+            if STRIPE_TRIAL_DAYS > 0:
+                session_kwargs['subscription_data'] = {
+                    'trial_period_days': STRIPE_TRIAL_DAYS,
+                }
+
+            checkout_session = stripe.checkout.Session.create(**session_kwargs)
             
             logging.info(f"Created checkout session for user {user_id}: {checkout_session.id}")
             return web.HTTPFound(location=checkout_session.url)
@@ -673,7 +699,8 @@ async def main():
     
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, port=8080)
+    port = int(os.getenv("PORT", "8080"))
+    site = web.TCPSite(runner, port=port)
     await site.start()
 
     await dp.start_polling(bot)
