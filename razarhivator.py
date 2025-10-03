@@ -17,6 +17,7 @@ from aiogram.filters import Command, StateFilter
 from pathlib import Path
 from pyunpack import Archive
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from datetime import datetime, timedelta
 import stripe
 
@@ -710,12 +711,12 @@ async def main():
     port = int(os.getenv("PORT", "8080"))
     site = web.TCPSite(runner, port=port)
     await site.start()
-
+    
     await bot.delete_webhook(drop_pending_updates=True)
     if TELEGRAM_WEBHOOK_SECRET:
         await bot.set_webhook(url=f"{_base_url()}{webhook_path}", secret_token=TELEGRAM_WEBHOOK_SECRET)
     else:
         await bot.set_webhook(url=f"{_base_url()}{webhook_path}")
-
-if __name__ == '__main__':
-    asyncio.run(main())
+    
+    # Stay alive in webhook mode
+    await asyncio.Event().wait()
