@@ -616,22 +616,45 @@ async def main():
             # Обрабатываем события
             if event['type'] == 'checkout.session.completed':
                 session = event['data']['object']
-                user_id = session['metadata'].get('user_id')
+                metadata = session.get('metadata') or {}
+                user_id = metadata.get('user_id')
                 subscription_id = session.get('subscription')
-                
-                if user_id and subscription_id:
+
+                if subscription_id:
                     # Получаем информацию о подписке
                     subscription = stripe.Subscription.retrieve(subscription_id)
                     expires_ts = subscription.current_period_end
-                    
-                    # Сохраняем маппинг subscription -> user_id
-                    add_subscription_mapping(subscription_id, user_id)
-                    
-                    # Обновляем лицензию пользователя
-                    update_user_license(int(user_id), expires_ts)
-                    
-                    logging.info(f"Subscription activated for user {user_id} until {expires_ts}")
-            
+
+                    if user_id:
+                        # Сохраняем маппинг subscription -> user_id
+                        add_subscription_mapping(subscription_id, user_id)
+                        # Обновляем лицензию пользователя
+                        update_user_license(int(user_id), expires_ts)
+                        logging.info(f"Subscription activated for user {user_id} until {expires_ts}")
+                    else:
+                        # user_id нет (например, оплата не через бот-чекаут). Привязываем по email через /link
+                        email = None
+                        # пытаемся взять email из session
+                        customer_details = session.get('customer_details') or {}
+                        email = customer_details.get('email')
+                        # если нет — пробуем достать из Customer
+                        if not email:
+                            cust_id = session.get('customer')
+                            if cust_id:
+                                try:
+                                    cust = stripe.Customer.retrieve(cust_id)
+                                    email = (cust.get('email') or '').strip() if isinstance(cust, dict) else None
+                                except Exception as e:  # не фейлим обработку
+                                    logging.warning(f"Unable to retrieve customer {cust_id}: {e}")
+                        if email:
+                            licenses = load_licenses()
+                            licenses.setdefault('pending_by_email', {})
+                            licenses['pending_by_email'][email] = expires_ts
+                            save_licenses(licenses)
+                            logging.info(f"Stored pending license by email {email} until {expires_ts}; user can run /link {email}")
+                        else:
+                            logging.warning("checkout.session.completed without user_id and email – cannot link automatically")
+
             elif event['type'] == 'invoice.payment_succeeded':
                 invoice = event['data']['object']
                 subscription_id = invoice.get('subscription')
@@ -639,15 +662,37 @@ async def main():
                 if subscription_id:
                     # Находим пользователя по subscription_id
                     user_id = get_user_by_subscription(subscription_id)
-                    
+
+                    # Если маппинга ещё нет (например, оплата через Payment Link без metadata) — пробуем связать по email
+                    if not user_id:
+                        email = (invoice.get('customer_email') or '').strip()
+                        if not email:
+                            cust_id = invoice.get('customer')
+                            if cust_id:
+                                try:
+                                    cust = stripe.Customer.retrieve(cust_id)
+                                    email = (cust.get('email') or '').strip() if isinstance(cust, dict) else None
+                                except Exception as e:
+                                    logging.warning(f"Unable to retrieve customer {cust_id}: {e}")
+                        if email:
+                            # если ранее мы сохранили pending_by_email, активируем по команде /link; здесь просто кэшируем срок
+                            try:
+                                subscription = stripe.Subscription.retrieve(subscription_id)
+                                expires_ts = subscription.current_period_end
+                                licenses = load_licenses()
+                                licenses.setdefault('pending_by_email', {})
+                                licenses['pending_by_email'][email] = expires_ts
+                                save_licenses(licenses)
+                                logging.info(f"Stored pending license by email {email} until {expires_ts} (awaiting /link {email})")
+                            except Exception as e:
+                                logging.warning(f"Failed to cache pending license for {email}: {e}")
+
                     if user_id:
                         # Получаем обновленную информацию о подписке
                         subscription = stripe.Subscription.retrieve(subscription_id)
                         expires_ts = subscription.current_period_end
-                        
                         # Обновляем лицензию
                         update_user_license(user_id, expires_ts)
-                        
                         logging.info(f"Subscription renewed for user {user_id} until {expires_ts}")
             
             elif event['type'] == 'invoice.payment_failed':
@@ -697,8 +742,20 @@ async def main():
     app = web.Application()
     app.router.add_get("/health", handle_health)
     app.router.add_get("/pay/checkout", handle_checkout)
+    # Stripe webhook: add both no-slash and slash aliases + optional GET for diagnostics
     app.router.add_post("/webhooks/stripe", handle_stripe_webhook)
+    app.router.add_post("/webhooks/stripe/", handle_stripe_webhook)
+    app.router.add_get("/webhooks/stripe", handle_health)  # returns 200 on GET for quick checks
+    app.router.add_get("/webhooks/stripe/", handle_health)
     app.router.add_get("/download/{token1}/{token2}", handle_download)
+
+    # Success/Cancel landing pages to avoid 404 after checkout
+    async def handle_pay_success(request):
+        return web.Response(text="Payment step finished. You can return to Telegram.")
+    async def handle_pay_cancel(request):
+        return web.Response(text="Payment was cancelled. You can return to Telegram and try again.")
+    app.router.add_get("/pay/success", handle_pay_success)
+    app.router.add_get("/pay/cancel", handle_pay_cancel)
 
     # Root route for sanity (helps avoid 502 for GET /)
     async def handle_root(request):
