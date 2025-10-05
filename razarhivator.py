@@ -155,6 +155,63 @@ def get_user_by_subscription(subscription_id):
         logging.error(f"Ошибка получения пользователя по подписке: {e}")
         return None
 
+# Безопасно получаем дату окончания периода подписки
+def compute_expires_ts_from_subscription(subscription):
+    """Возвращает timestamp окончания текущего периода подписки.
+    Пытается прочитать subscription.current_period_end, затем берёт из последнего инвойса,
+    и в крайнем случае возвращает +30 дней от текущего времени.
+    """
+    try:
+        # 1) Прямая попытка (работает и для StripeObject, и для dict)
+        expires_ts = None
+        try:
+            expires_ts = getattr(subscription, 'current_period_end', None)
+        except Exception:
+            expires_ts = None
+        if not expires_ts and isinstance(subscription, dict):
+            expires_ts = subscription.get('current_period_end')
+        if expires_ts:
+            return int(expires_ts)
+
+        # 2) Пытаемся достать конец периода из последнего инвойса
+        latest_invoice_id = None
+        try:
+            latest_invoice_id = getattr(subscription, 'latest_invoice', None)
+        except Exception:
+            latest_invoice_id = None
+        if not latest_invoice_id and isinstance(subscription, dict):
+            latest_invoice_id = subscription.get('latest_invoice')
+
+        if latest_invoice_id:
+            try:
+                invoice = stripe.Invoice.retrieve(latest_invoice_id, expand=['lines.data'])
+                # Берём первую позицию – это наша подписка
+                lines = None
+                try:
+                    lines = getattr(invoice, 'lines', None)
+                except Exception:
+                    lines = invoice.get('lines') if isinstance(invoice, dict) else None
+                data_list = None
+                if lines:
+                    try:
+                        data_list = getattr(lines, 'data', None)
+                    except Exception:
+                        data_list = lines.get('data') if isinstance(lines, dict) else None
+                if data_list and len(data_list) > 0:
+                    period = data_list[0].get('period') if isinstance(data_list[0], dict) else getattr(data_list[0], 'period', None)
+                    if period and ('end' in period):
+                        return int(period['end'])
+            except Exception as e:
+                logging.warning(f"Failed to read period end from invoice {latest_invoice_id}: {e}")
+
+        # 3) Фолбэк – даём 30 дней, чтобы юзер не зависал без доступа
+        fallback = int(time.time()) + 30 * 24 * 60 * 60
+        logging.warning("current_period_end not found; granting fallback 30 days")
+        return fallback
+    except Exception as e:
+        logging.error(f"compute_expires_ts_from_subscription error: {e}")
+        return int(time.time()) + 30 * 24 * 60 * 60
+
 # Состояния
 class DownloadState(StatesGroup):
     waiting_for_link = State()
@@ -623,7 +680,7 @@ async def main():
                 if subscription_id:
                     # Получаем информацию о подписке
                     subscription = stripe.Subscription.retrieve(subscription_id)
-                    expires_ts = subscription.current_period_end
+                    expires_ts = compute_expires_ts_from_subscription(subscription)
 
                     if user_id:
                         # Сохраняем маппинг subscription -> user_id
@@ -678,7 +735,7 @@ async def main():
                             # если ранее мы сохранили pending_by_email, активируем по команде /link; здесь просто кэшируем срок
                             try:
                                 subscription = stripe.Subscription.retrieve(subscription_id)
-                                expires_ts = subscription.current_period_end
+                                expires_ts = compute_expires_ts_from_subscription(subscription)
                                 licenses = load_licenses()
                                 licenses.setdefault('pending_by_email', {})
                                 licenses['pending_by_email'][email] = expires_ts
@@ -690,7 +747,7 @@ async def main():
                     if user_id:
                         # Получаем обновленную информацию о подписке
                         subscription = stripe.Subscription.retrieve(subscription_id)
-                        expires_ts = subscription.current_period_end
+                        expires_ts = compute_expires_ts_from_subscription(subscription)
                         # Обновляем лицензию
                         update_user_license(user_id, expires_ts)
                         logging.info(f"Subscription renewed for user {user_id} until {expires_ts}")
