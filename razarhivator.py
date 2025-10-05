@@ -493,24 +493,43 @@ async def pay_command(message: types.Message):
 @dp.message(Command(commands=['status']))
 async def status_command(message: types.Message):
     user_id = message.from_user.id
+
+    def _reply_active(ts: int):
+        expires_date = datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+        return f"✅ Подписка активна до {expires_date}"
+
     licenses = load_licenses()
     user_id_str = str(user_id)
-    
-    if user_id_str in licenses["users"]:
-        user_data = licenses["users"][user_id_str]
+
+    # 1) Сначала пробуем локально
+    user_data = licenses["users"].get(user_id_str)
+    current_time = int(time.time())
+    if user_data:
         expires_ts = user_data.get("expires_ts", 0)
-        current_time = int(time.time())
-        
         if expires_ts > current_time:
-            expires_date = datetime.fromtimestamp(expires_ts).strftime("%d.%m.%Y %H:%M")
-            await message.reply(f"✅ Подписка активна до {expires_date}")
-        else:
-            grace_until = user_data.get("grace_until", 0)
-            if grace_until > current_time:
-                grace_date = datetime.fromtimestamp(grace_until).strftime("%d.%m.%Y %H:%M")
-                await message.reply(f"⚠️ Грейс-период до {grace_date}")
-            else:
-                await message.reply("❌ Подписка неактивна")
+            await message.reply(_reply_active(expires_ts))
+            return
+        grace_until = user_data.get("grace_until", 0)
+        if grace_until > current_time:
+            grace_date = datetime.fromtimestamp(grace_until).strftime("%d.%m.%Y %H:%M")
+            await message.reply(f"⚠️ Грейс-период до {grace_date}")
+            return
+        # локально есть запись, но не активна – пробуем восстановить из Stripe
+
+    # 2) Пытаемся лениво восстановиться из Stripe
+    recovered = recover_license_from_stripe(user_id)
+    if recovered:
+        licenses = load_licenses()
+        user_data = licenses["users"].get(user_id_str)
+        if user_data:
+            expires_ts = user_data.get("expires_ts", 0)
+            if expires_ts > current_time:
+                await message.reply(_reply_active(expires_ts))
+                return
+
+    # 3) N/A – сообщаем статус
+    if user_data:
+        await message.reply("❌ Подписка неактивна")
     else:
         await message.reply("❌ Подписка не найдена")
 
