@@ -249,10 +249,31 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await message.reply("Привет! Отправь мне ссылки на MEGA — я их скачаю и разархивирую.")
     await state.set_state(DownloadState.waiting_for_link)
 
+# Разрешаем команды работать даже в состоянии ожидания ссылок
+@dp.message(StateFilter(DownloadState.waiting_for_link), Command(commands=['status']))
+async def status_in_waiting_state(message: types.Message, state: FSMContext):
+    # Проксируем в общий обработчик статуса
+    await status_command(message)
+
+@dp.message(StateFilter(DownloadState.waiting_for_link), Command(commands=['start']))
+async def start_in_waiting_state(message: types.Message, state: FSMContext):
+    # Перезапускаем приветствие/проверку подписки и оставляем корректное состояние
+    await send_welcome(message, state)
+
+@dp.message(StateFilter(DownloadState.waiting_for_link), Command(commands=['cancel']))
+async def cancel_in_waiting_state(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.reply("Режим ожидания ссылок сброшен. Отправьте /start или пришлите ссылку на MEGA.")
+
 # обработка ссылок
 @dp.message(StateFilter(DownloadState.waiting_for_link))
 async def process_link(message: types.Message, state: FSMContext):
     import re
+
+    # Если это другая команда (начинается с '/'), не пытаемся парсить как ссылку
+    if message.text.strip().startswith('/'):
+        await message.reply("Команда не распознана в режиме загрузки. Используйте /status, /cancel или /start.")
+        return
     
     # Проверяем лицензию
     if not is_license_active(message.from_user.id):
