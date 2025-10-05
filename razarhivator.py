@@ -71,12 +71,30 @@ def _ensure_licenses_file_writable():
     """
     try:
         base_dir = os.path.dirname(LICENSES_FILE) or "."
+        # 1) Ensure directory exists and is writable
         os.makedirs(base_dir, exist_ok=True)
-        # если файла нет — создаём с пустой структурой
+        try:
+            os.chmod(base_dir, 0o777)
+        except Exception:
+            pass
+
+        # 2) Create file with minimal JSON if it does not exist
         if not os.path.exists(LICENSES_FILE):
             with open(LICENSES_FILE, "w", encoding="utf-8") as f:
                 f.write(json.dumps({"users": {}, "pending_by_email": {}, "subs": {}}, ensure_ascii=False))
-        # проверяем возможность записи
+            try:
+                os.chmod(LICENSES_FILE, 0o666)
+            except Exception:
+                pass
+
+        # 3) If file exists but is not writable – try to relax permissions
+        if os.path.exists(LICENSES_FILE) and not os.access(LICENSES_FILE, os.W_OK):
+            try:
+                os.chmod(LICENSES_FILE, 0o666)
+            except Exception:
+                pass
+
+        # 4) Final check – open for r+ to verify
         with open(LICENSES_FILE, "r+", encoding="utf-8") as _:
             pass
         logging.info(f"Licenses file ensured and writable at {LICENSES_FILE}")
@@ -98,8 +116,20 @@ def load_licenses():
 def save_licenses(data):
     """Сохраняет данные лицензий в JSON файл"""
     try:
-        with open(LICENSES_FILE, 'w', encoding='utf-8') as f:
+        tmp_path = LICENSES_FILE + ".tmp"
+        base_dir = os.path.dirname(LICENSES_FILE) or "."
+        os.makedirs(base_dir, exist_ok=True)
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            os.chmod(tmp_path, 0o666)
+        except Exception:
+            pass
+        os.replace(tmp_path, LICENSES_FILE)
+        try:
+            os.chmod(LICENSES_FILE, 0o666)
+        except Exception:
+            pass
         return True
     except Exception as e:
         logging.error(f"Ошибка сохранения лицензий: {e}")
@@ -737,6 +767,19 @@ async def handle_delete_last(callback_query: CallbackQuery):
 
 async def main():
     _ensure_licenses_file_writable()
+    try:
+        import stat
+        uid = os.geteuid() if hasattr(os, 'geteuid') else None
+        gid = os.getegid() if hasattr(os, 'getegid') else None
+        def _mode(p):
+            try:
+                st = os.stat(p)
+                return oct(st.st_mode & 0o777)
+            except Exception:
+                return 'n/a'
+        logging.info(f"Runtime uid/gid: {uid}/{gid}; /data mode={_mode('/data')} ; file mode={_mode(LICENSES_FILE)}")
+    except Exception:
+        pass
     try:
         logging.info(f"Licenses file exists: {os.path.exists(LICENSES_FILE)} at {LICENSES_FILE}")
     except Exception:
