@@ -62,6 +62,7 @@ for directory in [OUTPUT_DIR, DOWNLOAD_DIR]:
 
 # Файл для хранения лицензий
 LICENSES_FILE = os.getenv("LICENSES_FILE", "/app/licenses.json")
+logging.info(f"Licenses file path: {LICENSES_FILE}")
 
 # Функции для работы с лицензиями
 def load_licenses():
@@ -118,6 +119,27 @@ def is_license_active(user_id):
         logging.error(f"Ошибка проверки лицензии: {e}")
         return False
 
+def get_local_status_record(user_id: int):
+    """Возвращает локальный статус подписки.
+    status: 'active' | 'grace' | 'none'
+    payload: dict с полями expires_ts/grace_until/record
+    """
+    try:
+        licenses = load_licenses()
+        rec = licenses["users"].get(str(user_id))
+        now = int(time.time())
+        if rec:
+            expires_ts = int(rec.get("expires_ts", 0) or 0)
+            grace_until = int(rec.get("grace_until", 0) or 0)
+            if expires_ts > now:
+                return "active", {"expires_ts": expires_ts, "record": rec}
+            if grace_until > now:
+                return "grace", {"grace_until": grace_until, "record": rec}
+        return "none", {"record": rec}
+    except Exception as e:
+        logging.error(f"get_local_status_record error: {e}")
+        return "none", {}
+
 def update_user_license(user_id, expires_ts, email=None):
     """Обновляет лицензию пользователя"""
     try:
@@ -128,6 +150,8 @@ def update_user_license(user_id, expires_ts, email=None):
             licenses["users"][user_id_str] = {}
             
         licenses["users"][user_id_str]["expires_ts"] = expires_ts
+        licenses["users"][user_id_str].pop("grace_until", None)  # убираем грейс, если был
+        logging.info(f"License updated for {user_id_str} until {expires_ts}")
         if email:
             licenses["users"][user_id_str]["email"] = email
             
@@ -494,41 +518,49 @@ async def pay_command(message: types.Message):
 async def status_command(message: types.Message):
     user_id = message.from_user.id
 
+    # Админ — всегда активен
+    try:
+        if int(user_id) == int(ADMIN_ID):
+            await message.reply("✅ У вас безлимитный доступ (администратор)")
+            return
+    except Exception:
+        pass
+
     def _reply_active(ts: int):
         expires_date = datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
         return f"✅ Подписка активна до {expires_date}"
 
-    licenses = load_licenses()
-    user_id_str = str(user_id)
+    # 1) Локальный статус
+    status, payload = get_local_status_record(user_id)
+    now = int(time.time())
+    if status == "active":
+        await message.reply(_reply_active(int(payload.get("expires_ts", now))))
+        return
+    if status == "grace":
+        grace_date = datetime.fromtimestamp(int(payload.get("grace_until", now))).strftime("%d.%m.%Y %H:%M")
+        await message.reply(f"⚠️ Грейс-период до {grace_date}")
+        return
 
-    # 1) Сначала пробуем локально
-    user_data = licenses["users"].get(user_id_str)
-    current_time = int(time.time())
-    if user_data:
-        expires_ts = user_data.get("expires_ts", 0)
-        if expires_ts > current_time:
-            await message.reply(_reply_active(expires_ts))
-            return
-        grace_until = user_data.get("grace_until", 0)
-        if grace_until > current_time:
-            grace_date = datetime.fromtimestamp(grace_until).strftime("%d.%m.%Y %H:%M")
-            await message.reply(f"⚠️ Грейс-период до {grace_date}")
-            return
-        # локально есть запись, но не активна – пробуем восстановить из Stripe
-
-    # 2) Пытаемся лениво восстановиться из Stripe
-    recovered = recover_license_from_stripe(user_id)
-    if recovered:
-        licenses = load_licenses()
-        user_data = licenses["users"].get(user_id_str)
-        if user_data:
-            expires_ts = user_data.get("expires_ts", 0)
-            if expires_ts > current_time:
-                await message.reply(_reply_active(expires_ts))
+    # 2) Если локально нет записи, но доступ активен — подстрахуемся
+    if is_license_active(user_id):
+        if recover_license_from_stripe(user_id):
+            status, payload = get_local_status_record(user_id)
+            if status == "active":
+                await message.reply(_reply_active(int(payload.get("expires_ts", now))))
                 return
+        await message.reply("✅ Подписка активна (инициализирую кэш, попробуйте /status ещё раз через минуту)")
+        return
 
-    # 3) N/A – сообщаем статус
-    if user_data:
+    # 3) Ленивое восстановление из Stripe
+    if recover_license_from_stripe(user_id):
+        status, payload = get_local_status_record(user_id)
+        if status == "active":
+            await message.reply(_reply_active(int(payload.get("expires_ts", now))))
+            return
+
+    # 4) Нет подписки
+    rec = payload.get("record") if isinstance(payload, dict) else None
+    if rec:
         await message.reply("❌ Подписка неактивна")
     else:
         await message.reply("❌ Подписка не найдена")
@@ -679,6 +711,10 @@ async def handle_delete_last(callback_query: CallbackQuery):
     await callback_query.answer()
 
 async def main():
+    try:
+        logging.info(f"Licenses file exists: {os.path.exists(LICENSES_FILE)} at {LICENSES_FILE}")
+    except Exception:
+        pass
     # Обработчик для скачивания файлов
     async def handle_download(request):
         token1 = request.match_info.get("token1")
