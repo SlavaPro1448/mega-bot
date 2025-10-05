@@ -60,9 +60,28 @@ DOWNLOAD_DIR = '/app/downloads'
 for directory in [OUTPUT_DIR, DOWNLOAD_DIR]:
     os.makedirs(directory, exist_ok=True)
 
-# Файл для хранения лицензий
-LICENSES_FILE = os.getenv("LICENSES_FILE", "/app/licenses.json")
+LICENSES_FILE = os.getenv("LICENSES_FILE", "/data/licenses.json")
 logging.info(f"Licenses file path: {LICENSES_FILE}")
+
+# Гарантируем доступность файла лицензий
+def _ensure_licenses_file_writable():
+    """
+    Гарантирует, что каталог/файл лицензий существует и доступен для записи.
+    Создаёт базовую структуру JSON при отсутствии файла.
+    """
+    try:
+        base_dir = os.path.dirname(LICENSES_FILE) or "."
+        os.makedirs(base_dir, exist_ok=True)
+        # если файла нет — создаём с пустой структурой
+        if not os.path.exists(LICENSES_FILE):
+            with open(LICENSES_FILE, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"users": {}, "pending_by_email": {}, "subs": {}}, ensure_ascii=False))
+        # проверяем возможность записи
+        with open(LICENSES_FILE, "r+", encoding="utf-8") as _:
+            pass
+        logging.info(f"Licenses file ensured and writable at {LICENSES_FILE}")
+    except Exception as e:
+        logging.error(f"Cannot write to {LICENSES_FILE}: {e}")
 
 # Функции для работы с лицензиями
 def load_licenses():
@@ -242,11 +261,17 @@ def recover_license_from_stripe(user_id: int) -> bool:
         # 1) Ищем подписку по metadata.user_id через Stripe Search API
         sub = None
         try:
-            query = f"metadata['user_id']:'{user_id}' AND (status:'active' OR status:'trialing')"
-            res = stripe.Subscription.search(query=query, limit=1)
-            data = getattr(res, 'data', None) if hasattr(res, 'data') else res.get('data') if isinstance(res, dict) else None
+            # 1-я попытка: статус active
+            res = stripe.Subscription.search(query=f"metadata['user_id']:'{user_id}' AND status:'active'", limit=1)
+            data = getattr(res, 'data', None) if hasattr(res, 'data') else (res.get('data') if isinstance(res, dict) else None)
             if data and len(data) > 0:
                 sub = data[0]
+            # 2-я попытка: статус trialing
+            if not sub:
+                res = stripe.Subscription.search(query=f"metadata['user_id']:'{user_id}' AND status:'trialing'", limit=1)
+                data = getattr(res, 'data', None) if hasattr(res, 'data') else (res.get('data') if isinstance(res, dict) else None)
+                if data and len(data) > 0:
+                    sub = data[0]
         except Exception as e:
             logging.warning(f"Stripe search not available, fallback to list: {e}")
         # 2) Фолбэк: перебор последних подписок и фильтр по metadata
@@ -711,6 +736,7 @@ async def handle_delete_last(callback_query: CallbackQuery):
     await callback_query.answer()
 
 async def main():
+    _ensure_licenses_file_writable()
     try:
         logging.info(f"Licenses file exists: {os.path.exists(LICENSES_FILE)} at {LICENSES_FILE}")
     except Exception:
