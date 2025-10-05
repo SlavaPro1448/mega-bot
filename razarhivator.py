@@ -61,7 +61,7 @@ for directory in [OUTPUT_DIR, DOWNLOAD_DIR]:
     os.makedirs(directory, exist_ok=True)
 
 # Файл для хранения лицензий
-LICENSES_FILE = "/app/licenses.json"
+LICENSES_FILE = os.getenv("LICENSES_FILE", "/app/licenses.json")
 
 # Функции для работы с лицензиями
 def load_licenses():
@@ -212,6 +212,44 @@ def compute_expires_ts_from_subscription(subscription):
         logging.error(f"compute_expires_ts_from_subscription error: {e}")
         return int(time.time()) + 30 * 24 * 60 * 60
 
+# Пытаемся восстановить лицензию напрямую из Stripe (после деплоя/перезапуска)
+def recover_license_from_stripe(user_id: int) -> bool:
+    try:
+        # 1) Ищем подписку по metadata.user_id через Stripe Search API
+        sub = None
+        try:
+            query = f"metadata['user_id']:'{user_id}' AND (status:'active' OR status:'trialing')"
+            res = stripe.Subscription.search(query=query, limit=1)
+            data = getattr(res, 'data', None) if hasattr(res, 'data') else res.get('data') if isinstance(res, dict) else None
+            if data and len(data) > 0:
+                sub = data[0]
+        except Exception as e:
+            logging.warning(f"Stripe search not available, fallback to list: {e}")
+        # 2) Фолбэк: перебор последних подписок и фильтр по metadata
+        if not sub:
+            try:
+                subs = stripe.Subscription.list(limit=50)
+                for s in getattr(subs, 'data', subs.get('data', [])):
+                    md = getattr(s, 'metadata', None)
+                    if not md and isinstance(s, dict):
+                        md = s.get('metadata')
+                    if md and str(md.get('user_id')) == str(user_id) and getattr(s, 'status', s.get('status')) in ('active', 'trialing'):
+                        sub = s
+                        break
+            except Exception as e:
+                logging.warning(f"Stripe list fallback failed: {e}")
+        if not sub:
+            return False
+        # 3) Вычисляем срок действия и сохраняем локально
+        expires_ts = compute_expires_ts_from_subscription(sub)
+        add_subscription_mapping(getattr(sub, 'id', sub.get('id')), user_id)
+        update_user_license(int(user_id), expires_ts)
+        logging.info(f"Recovered license from Stripe for user {user_id} until {expires_ts}")
+        return True
+    except Exception as e:
+        logging.error(f"recover_license_from_stripe error: {e}")
+        return False
+
 # Состояния
 class DownloadState(StatesGroup):
     waiting_for_link = State()
@@ -233,18 +271,20 @@ def recursively_unpack(archive_path, extract_dir):
 async def send_welcome(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     
-    # Проверяем лицензию
+    # Проверяем лицензию; если нет — пробуем восстановить из Stripe (после деплоя)
     if not is_license_active(user_id):
-        pay_url = f"{_base_url()}/pay/checkout?user_id={user_id}"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить подписку", url=pay_url)]
-        ])
-        await message.reply(
-            "Привет! Для использования бота нужна активная подписка.\n\n"
-            "Нажмите кнопку ниже для оплаты:",
-            reply_markup=keyboard
-        )
-        return
+        recovered = recover_license_from_stripe(user_id)
+        if not recovered and not is_license_active(user_id):
+            pay_url = f"{_base_url()}/pay/checkout?user_id={user_id}"
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Оплатить подписку", url=pay_url)]
+            ])
+            await message.reply(
+                "Привет! Для использования бота нужна активная подписка.\n\n"
+                "Нажмите кнопку ниже для оплаты:",
+                reply_markup=keyboard
+            )
+            return
     
     await message.reply("Привет! Отправь мне ссылки на MEGA — я их скачаю и разархивирую.")
     await state.set_state(DownloadState.waiting_for_link)
@@ -655,14 +695,15 @@ async def main():
                 metadata={
                     'user_id': str(user_id)
                 },
+                subscription_data={
+                    'metadata': {'user_id': str(user_id)},
+                },
                 success_url=f"{_base_url()}/pay/success?u={user_id}",
                 cancel_url=f"{_base_url()}/pay/cancel?u={user_id}",
             )
             # Добавляем триал, если указан в переменных окружения
             if STRIPE_TRIAL_DAYS > 0:
-                session_kwargs['subscription_data'] = {
-                    'trial_period_days': STRIPE_TRIAL_DAYS,
-                }
+                session_kwargs['subscription_data']['trial_period_days'] = STRIPE_TRIAL_DAYS
 
             checkout_session = stripe.checkout.Session.create(**session_kwargs)
             
